@@ -1,0 +1,857 @@
+--[[
+    BRANZZ HUB PvP
+    Script Lua com UI moderna e funcionalidades avançadas
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+
+-- Variáveis globais
+local markedPosition = nil
+local speedBoostEnabled = false
+local fakePingEnabled = false
+local hitboxExpanderEnabled = false
+local hitboxSize = 20
+local originalSpeeds = {}
+local fakeClone = nil
+local connections = {}
+
+-- Atualizar referências quando o personagem reseta
+player.CharacterAdded:Connect(function(newChar)
+    task.wait(0.5)
+    character = newChar
+    humanoid = newChar:WaitForChild("Humanoid")
+    humanoidRootPart = newChar:WaitForChild("HumanoidRootPart")
+    
+    -- Limpar marcador de posição ao resetar
+    for _, obj in pairs(workspace:GetChildren()) do
+        if obj.Name == "PositionMarker" or obj.Name == "BeamMarker" then
+            obj:Destroy()
+        end
+    end
+end)
+
+-- Função para criar notificação
+local function createNotification(message, color)
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Parent = player:WaitForChild("PlayerGui")
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.DisplayOrder = 999
+    
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0, 300, 0, 60)
+    Frame.Position = UDim2.new(0.5, -150, 0, -70)
+    Frame.BackgroundColor3 = color or Color3.fromRGB(40, 40, 45)
+    Frame.BorderSizePixel = 0
+    Frame.Parent = ScreenGui
+    
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 10)
+    UICorner.Parent = Frame
+    
+    local UIStroke = Instance.new("UIStroke")
+    UIStroke.Color = Color3.fromRGB(100, 100, 110)
+    UIStroke.Thickness = 2
+    UIStroke.Parent = Frame
+    
+    local TextLabel = Instance.new("TextLabel")
+    TextLabel.Size = UDim2.new(1, -20, 1, -20)
+    TextLabel.Position = UDim2.new(0, 10, 0, 10)
+    TextLabel.BackgroundTransparency = 1
+    TextLabel.Text = message
+    TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TextLabel.TextSize = 16
+    TextLabel.Font = Enum.Font.GothamBold
+    TextLabel.TextWrapped = true
+    TextLabel.Parent = Frame
+    
+    -- Animação de entrada
+    TweenService:Create(Frame, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Position = UDim2.new(0.5, -150, 0, 20)
+    }):Play()
+    
+    -- Destruir após 3 segundos
+    task.delay(3, function()
+        TweenService:Create(Frame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Position = UDim2.new(0.5, -150, 0, -70)
+        }):Play()
+        task.wait(0.3)
+        ScreenGui:Destroy()
+    end)
+end
+
+-- Função para marcar posição
+local function markPosition()
+    if markedPosition then
+        createNotification("❌ Posição já marcada! Use Clear Position primeiro.", Color3.fromRGB(220, 50, 50))
+        return
+    end
+    
+    markedPosition = humanoidRootPart.Position
+    createNotification("🚩 Posição marcada com sucesso!", Color3.fromRGB(50, 220, 100))
+    
+    -- Criar marcador visual
+    local marker = Instance.new("Part")
+    marker.Name = "PositionMarker"
+    marker.Size = Vector3.new(4, 0.5, 4)
+    marker.Position = markedPosition
+    marker.Anchored = true
+    marker.CanCollide = false
+    marker.Material = Enum.Material.Neon
+    marker.Color = Color3.fromRGB(0, 255, 150)
+    marker.Transparency = 0.3
+    marker.Parent = workspace
+    
+    local beam = Instance.new("Part")
+    beam.Name = "BeamMarker"
+    beam.Size = Vector3.new(0.5, 500, 0.5)
+    beam.Position = markedPosition + Vector3.new(0, 250, 0)
+    beam.Anchored = true
+    beam.CanCollide = false
+    beam.Material = Enum.Material.Neon
+    beam.Color = Color3.fromRGB(0, 255, 150)
+    beam.Transparency = 0.7
+    beam.Parent = workspace
+end
+
+-- Função para limpar posição
+local function clearPosition()
+    if not markedPosition then
+        createNotification("⚠️ Nenhuma posição marcada!", Color3.fromRGB(220, 150, 50))
+        return
+    end
+    
+    markedPosition = nil
+    createNotification("🗑️ Posição removida!", Color3.fromRGB(100, 150, 220))
+    
+    -- Remover marcadores visuais
+    for _, obj in pairs(workspace:GetChildren()) do
+        if obj.Name == "PositionMarker" or obj.Name == "BeamMarker" then
+            obj:Destroy()
+        end
+    end
+end
+
+-- Função Instant TP
+local function instantTP()
+    if not markedPosition then
+        createNotification("❌ Marque uma posição primeiro!", Color3.fromRGB(220, 50, 50))
+        return
+    end
+    
+    createNotification("⚡ Iniciando Instant TP...", Color3.fromRGB(100, 200, 255))
+    
+    local targetPos = markedPosition
+    local startPos = humanoidRootPart.Position
+    local distance = (targetPos - startPos).Magnitude
+    local steps = math.ceil(distance / 30) -- Mini teleports a cada 30 studs
+    
+    for i = 1, steps do
+        local progress = i / steps
+        local newPos = startPos:Lerp(targetPos, progress)
+        
+        -- Desviar de jogadores
+        for _, otherPlayer in pairs(Players:GetPlayers()) do
+            if otherPlayer ~= player and otherPlayer.Character then
+                local otherRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if otherRoot then
+                    local dist = (otherRoot.Position - newPos).Magnitude
+                    if dist < 15 then
+                        local pushDirection = (otherRoot.Position - newPos).Unit
+                        local bodyVelocity = Instance.new("BodyVelocity")
+                        bodyVelocity.MaxForce = Vector3.new(50000, 50000, 50000)
+                        bodyVelocity.Velocity = pushDirection * 100
+                        bodyVelocity.Parent = otherRoot
+                        task.delay(0.1, function()
+                            bodyVelocity:Destroy()
+                        end)
+                    end
+                end
+            end
+        end
+        
+        humanoidRootPart.CFrame = CFrame.new(newPos)
+        task.wait(0.15) -- Pequena pausa
+    end
+    
+    humanoidRootPart.CFrame = CFrame.new(targetPos)
+    createNotification("✅ Teleporte concluído!", Color3.fromRGB(50, 220, 100))
+end
+
+-- Função TP Countdown
+local function tpCountdown()
+    if not markedPosition then
+        createNotification("❌ Marque uma posição primeiro!", Color3.fromRGB(220, 50, 50))
+        return
+    end
+    
+    local targetPos = markedPosition -- Salvar a posição antes do countdown
+    
+    for i = 5, 1, -1 do
+        createNotification("⏳ Teleportando em " .. i .. "...", Color3.fromRGB(255, 200, 0))
+        task.wait(1)
+    end
+    
+    if humanoidRootPart and humanoidRootPart.Parent then
+        humanoidRootPart.CFrame = CFrame.new(targetPos)
+        createNotification("✅ Teleportado!", Color3.fromRGB(50, 220, 100))
+    end
+end
+
+-- Função Speed Boost
+local function toggleSpeedBoost()
+    speedBoostEnabled = not speedBoostEnabled
+    
+    if speedBoostEnabled then
+        -- Guardar velocidade original
+        if not originalSpeeds[player.UserId] then
+            originalSpeeds[player.UserId] = humanoid.WalkSpeed
+        end
+        
+        humanoid.WalkSpeed = 50
+        
+        -- Remover conexão antiga se existir
+        if connections.speedBoost then
+            connections.speedBoost:Disconnect()
+        end
+        
+        -- Manter velocidade após reset
+        connections.speedBoost = player.CharacterAdded:Connect(function(newChar)
+            task.wait(0.5)
+            character = newChar
+            humanoid = newChar:WaitForChild("Humanoid")
+            humanoidRootPart = newChar:WaitForChild("HumanoidRootPart")
+            
+            if speedBoostEnabled then
+                humanoid.WalkSpeed = 50
+            end
+        end)
+        
+        createNotification("🏁 Speed Boost ATIVADO! (Velocidade: 50)", Color3.fromRGB(100, 255, 200))
+    else
+        humanoid.WalkSpeed = originalSpeeds[player.UserId] or 16
+        
+        -- Desconectar evento de reset
+        if connections.speedBoost then
+            connections.speedBoost:Disconnect()
+            connections.speedBoost = nil
+        end
+        
+        createNotification("🏁 Speed Boost DESATIVADO!", Color3.fromRGB(220, 150, 50))
+    end
+end
+
+-- Função Fake Ping Server
+local function toggleFakePing()
+    fakePingEnabled = not fakePingEnabled
+    
+    if fakePingEnabled then
+        createNotification("📵 Fake Ping ATIVADO! Você está invisível.", Color3.fromRGB(150, 100, 255))
+        
+        -- Salvar posição original
+        local originalPos = humanoidRootPart.CFrame
+        
+        -- Criar clone fake realista
+        fakeClone = character:Clone()
+        fakeClone.Name = player.Name .. "_Clone"
+        
+        -- Remover scripts do clone
+        for _, obj in pairs(fakeClone:GetDescendants()) do
+            if obj:IsA("Script") or obj:IsA("LocalScript") then
+                obj:Destroy()
+            end
+        end
+        
+        fakeClone.Parent = workspace
+        
+        -- Posicionar clone na posição original
+        if fakeClone:FindFirstChild("HumanoidRootPart") then
+            fakeClone.HumanoidRootPart.CFrame = originalPos
+            fakeClone.HumanoidRootPart.Anchored = true
+        end
+        
+        -- Fazer o clone oscilar (simulação de lag)
+        local cloneHrp = fakeClone:FindFirstChild("HumanoidRootPart")
+        if cloneHrp then
+            connections.fakeCloneOscillate = RunService.Heartbeat:Connect(function()
+                if fakePingEnabled and fakeClone and fakeClone.Parent then
+                    local offset = Vector3.new(
+                        math.random(-3, 3) / 2,
+                        0,
+                        math.random(-3, 3) / 2
+                    )
+                    cloneHrp.CFrame = originalPos * CFrame.new(offset)
+                end
+            end)
+        end
+        
+        -- Tornar o jogador real completamente invisível
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.Transparency = 1
+                part.CanCollide = false
+            elseif part:IsA("Decal") then
+                part.Transparency = 1
+            end
+        end
+        
+        -- Mover jogador real para posição segura (muito alto)
+        connections.fakePingSafety = RunService.Heartbeat:Connect(function()
+            if fakePingEnabled and humanoidRootPart then
+                humanoidRootPart.CFrame = CFrame.new(originalPos.Position + Vector3.new(0, 10000, 0))
+                humanoidRootPart.Velocity = Vector3.new(0, 0, 0)
+            end
+        end)
+        
+        -- Criar holograma visual do clone para o jogador ver
+        local hologramClone = fakeClone:Clone()
+        hologramClone.Name = "HologramClone"
+        for _, part in pairs(hologramClone:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.Transparency = 0.7
+                part.Material = Enum.Material.ForceField
+                part.CanCollide = false
+            end
+        end
+        
+        -- Desabilitar colisões do clone fake
+        for _, part in pairs(fakeClone:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+        
+    else
+        createNotification("📵 Fake Ping DESATIVADO!", Color3.fromRGB(220, 150, 50))
+        
+        -- Desconectar loops
+        if connections.fakeCloneOscillate then
+            connections.fakeCloneOscillate:Disconnect()
+            connections.fakeCloneOscillate = nil
+        end
+        
+        if connections.fakePingSafety then
+            connections.fakePingSafety:Disconnect()
+            connections.fakePingSafety = nil
+        end
+        
+        -- Destruir clone
+        if fakeClone then
+            fakeClone:Destroy()
+            fakeClone = nil
+        end
+        
+        -- Restaurar visibilidade do jogador real
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+                part.Transparency = 0
+                part.CanCollide = true
+            elseif part:IsA("BasePart") and part.Name == "HumanoidRootPart" then
+                part.Transparency = 1
+                part.CanCollide = false
+            elseif part:IsA("Decal") then
+                part.Transparency = 0
+            end
+        end
+    end
+end
+
+-- Função TP Forward
+local function tpForward()
+    local lookVector = humanoidRootPart.CFrame.LookVector
+    local newPos = humanoidRootPart.Position + (lookVector * 10)
+    
+    -- Animação de teleporte
+    local tween = TweenService:Create(humanoidRootPart, TweenInfo.new(0.3, Enum.EasingStyle.Quad), {
+        CFrame = CFrame.new(newPos, newPos + lookVector)
+    })
+    tween:Play()
+    
+    createNotification("🚀 Teleportado 10 studs para frente!", Color3.fromRGB(100, 200, 255))
+end
+
+-- Função Hitbox Expander
+local function toggleHitboxExpander()
+    hitboxExpanderEnabled = not hitboxExpanderEnabled
+    
+    if hitboxExpanderEnabled then
+        createNotification("💠 Hitbox Expander ATIVADO! (Tamanho: " .. hitboxSize .. ")", Color3.fromRGB(255, 150, 255))
+        
+        -- Remover conexão antiga se existir
+        if connections.hitboxExpander then
+            connections.hitboxExpander:Disconnect()
+        end
+        
+        connections.hitboxExpander = RunService.Heartbeat:Connect(function()
+            if hitboxExpanderEnabled then
+                for _, otherPlayer in pairs(Players:GetPlayers()) do
+                    if otherPlayer ~= player and otherPlayer.Character then
+                        local otherRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+                        if otherRoot then
+                            otherRoot.Size = Vector3.new(hitboxSize, hitboxSize, hitboxSize)
+                            otherRoot.Transparency = 0.7
+                            otherRoot.Color = Color3.fromRGB(255, 255, 255)
+                            otherRoot.Material = Enum.Material.ForceField
+                            otherRoot.CanCollide = false
+                        end
+                    end
+                end
+            end
+        end)
+    else
+        createNotification("💠 Hitbox Expander DESATIVADO!", Color3.fromRGB(220, 150, 50))
+        
+        -- Desconectar loop
+        if connections.hitboxExpander then
+            connections.hitboxExpander:Disconnect()
+            connections.hitboxExpander = nil
+        end
+        
+        -- Restaurar hitboxes originais
+        for _, otherPlayer in pairs(Players:GetPlayers()) do
+            if otherPlayer ~= player and otherPlayer.Character then
+                local otherRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if otherRoot then
+                    otherRoot.Size = Vector3.new(2, 2, 1)
+                    otherRoot.Transparency = 1
+                    otherRoot.CanCollide = false
+                    otherRoot.Material = Enum.Material.Plastic
+                end
+            end
+        end
+    end
+end
+
+-- CRIAÇÃO DA UI
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "BranzzHubPvP"
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 100
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+-- Frame principal
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 320, 0, 420)
+mainFrame.Position = UDim2.new(0.5, -160, 0.5, -210)
+mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
+
+-- Gradiente sutil no fundo
+local gradient = Instance.new("UIGradient")
+gradient.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(25, 25, 30)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(35, 35, 42))
+}
+gradient.Rotation = 45
+gradient.Parent = mainFrame
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 15)
+mainCorner.Parent = mainFrame
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Color3.fromRGB(80, 80, 90)
+mainStroke.Thickness = 2
+mainStroke.Parent = mainFrame
+
+-- Barra de título
+local titleBar = Instance.new("Frame")
+titleBar.Name = "TitleBar"
+titleBar.Size = UDim2.new(1, 0, 0, 45)
+titleBar.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = mainFrame
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 15)
+titleCorner.Parent = titleBar
+
+-- Texto do título
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Name = "TitleLabel"
+titleLabel.Size = UDim2.new(1, -110, 1, 0)
+titleLabel.Position = UDim2.new(0, 12, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "⚡ BRANZZ HUB PvP"
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.TextSize = 17
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleBar
+
+-- Gradiente no título
+local titleGradient = Instance.new("UIGradient")
+titleGradient.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(100, 200, 255)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(200, 100, 255)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 100, 150))
+}
+titleGradient.Parent = titleLabel
+
+-- Animar gradiente
+task.spawn(function()
+    while true do
+        for i = 0, 360, 2 do
+            titleGradient.Rotation = i
+            task.wait(0.05)
+        end
+    end
+end)
+
+-- Botão Minimizar
+local minimizeBtn = Instance.new("TextButton")
+minimizeBtn.Name = "MinimizeBtn"
+minimizeBtn.Size = UDim2.new(0, 30, 0, 30)
+minimizeBtn.Position = UDim2.new(1, -95, 0.5, -15)
+minimizeBtn.BackgroundColor3 = Color3.fromRGB(50, 120, 200)
+minimizeBtn.Text = "−"
+minimizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+minimizeBtn.TextSize = 20
+minimizeBtn.Font = Enum.Font.GothamBold
+minimizeBtn.Parent = titleBar
+
+local minimizeCorner = Instance.new("UICorner")
+minimizeCorner.CornerRadius = UDim.new(0, 8)
+minimizeCorner.Parent = minimizeBtn
+
+-- Botão Maximizar
+local maximizeBtn = Instance.new("TextButton")
+maximizeBtn.Name = "MaximizeBtn"
+maximizeBtn.Size = UDim2.new(0, 30, 0, 30)
+maximizeBtn.Position = UDim2.new(1, -60, 0.5, -15)
+maximizeBtn.BackgroundColor3 = Color3.fromRGB(100, 200, 100)
+maximizeBtn.Text = "□"
+maximizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+maximizeBtn.TextSize = 18
+maximizeBtn.Font = Enum.Font.GothamBold
+maximizeBtn.Parent = titleBar
+
+local maximizeCorner = Instance.new("UICorner")
+maximizeCorner.CornerRadius = UDim.new(0, 8)
+maximizeCorner.Parent = maximizeBtn
+
+-- Botão Fechar
+local closeBtn = Instance.new("TextButton")
+closeBtn.Name = "CloseBtn"
+closeBtn.Size = UDim2.new(0, 30, 0, 30)
+closeBtn.Position = UDim2.new(1, -25, 0.5, -15)
+closeBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
+closeBtn.Text = "×"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.TextSize = 24
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.Parent = titleBar
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 8)
+closeCorner.Parent = closeBtn
+
+-- ScrollingFrame para conteúdo
+local scrollFrame = Instance.new("ScrollingFrame")
+scrollFrame.Name = "ScrollFrame"
+scrollFrame.Size = UDim2.new(1, -16, 1, -58)
+scrollFrame.Position = UDim2.new(0, 8, 0, 52)
+scrollFrame.BackgroundTransparency = 1
+scrollFrame.BorderSizePixel = 0
+scrollFrame.ScrollBarThickness = 6
+scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 110)
+scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+scrollFrame.Parent = mainFrame
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, 10)
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Parent = scrollFrame
+
+-- Ajustar canvas size automaticamente
+listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 20)
+end)
+
+-- Função para criar botão
+local function createButton(text, onClick, parent, color)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -8, 0, 40)
+    btn.BackgroundColor3 = color or Color3.fromRGB(45, 45, 52)
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 14
+    btn.Font = Enum.Font.GothamBold
+    btn.Parent = parent or scrollFrame
+    
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 10)
+    btnCorner.Parent = btn
+    
+    local btnStroke = Instance.new("UIStroke")
+    btnStroke.Color = Color3.fromRGB(80, 80, 90)
+    btnStroke.Thickness = 1.5
+    btnStroke.Parent = btn
+    
+    -- Efeito hover
+    btn.MouseEnter:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.2), {
+            BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+        }):Play()
+    end)
+    
+    btn.MouseLeave:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.2), {
+            BackgroundColor3 = color or Color3.fromRGB(45, 45, 52)
+        }):Play()
+    end)
+    
+    btn.MouseButton1Click:Connect(onClick)
+    
+    return btn
+end
+
+-- Função para criar checkbox/toggle
+local function createToggle(text, onToggle, parent)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, -8, 0, 45)
+    container.BackgroundColor3 = Color3.fromRGB(40, 40, 47)
+    container.Parent = parent or scrollFrame
+    
+    local containerCorner = Instance.new("UICorner")
+    containerCorner.CornerRadius = UDim.new(0, 10)
+    containerCorner.Parent = container
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -65, 1, 0)
+    label.Position = UDim2.new(0, 12, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextSize = 13
+    label.Font = Enum.Font.GothamBold
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextWrapped = true
+    label.Parent = container
+    
+    local toggleBtn = Instance.new("TextButton")
+    toggleBtn.Size = UDim2.new(0, 45, 0, 26)
+    toggleBtn.Position = UDim2.new(1, -52, 0.5, -13)
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+    toggleBtn.Text = ""
+    toggleBtn.Parent = container
+    
+    local toggleCorner = Instance.new("UICorner")
+    toggleCorner.CornerRadius = UDim.new(1, 0)
+    toggleCorner.Parent = toggleBtn
+    
+    local toggleIndicator = Instance.new("Frame")
+    toggleIndicator.Size = UDim2.new(0, 20, 0, 20)
+    toggleIndicator.Position = UDim2.new(0, 3, 0.5, -10)
+    toggleIndicator.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
+    toggleIndicator.Parent = toggleBtn
+    
+    local indicatorCorner = Instance.new("UICorner")
+    indicatorCorner.CornerRadius = UDim.new(1, 0)
+    indicatorCorner.Parent = toggleIndicator
+    
+    local isToggled = false
+    
+    toggleBtn.MouseButton1Click:Connect(function()
+        isToggled = not isToggled
+        
+        if isToggled then
+            TweenService:Create(toggleBtn, TweenInfo.new(0.3), {
+                BackgroundColor3 = Color3.fromRGB(100, 200, 100)
+            }):Play()
+            TweenService:Create(toggleIndicator, TweenInfo.new(0.3), {
+                Position = UDim2.new(1, -23, 0.5, -10)
+            }):Play()
+        else
+            TweenService:Create(toggleBtn, TweenInfo.new(0.3), {
+                BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+            }):Play()
+            TweenService:Create(toggleIndicator, TweenInfo.new(0.3), {
+                Position = UDim2.new(0, 3, 0.5, -10)
+            }):Play()
+        end
+        
+        onToggle(isToggled)
+    end)
+    
+    return container
+end
+
+-- Função para criar slider
+local function createSlider(text, min, max, defaultValue, onValueChange, parent)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, -8, 0, 60)
+    container.BackgroundColor3 = Color3.fromRGB(40, 40, 47)
+    container.Parent = parent or scrollFrame
+    
+    local containerCorner = Instance.new("UICorner")
+    containerCorner.CornerRadius = UDim.new(0, 10)
+    containerCorner.Parent = container
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -16, 0, 22)
+    label.Position = UDim2.new(0, 8, 0, 5)
+    label.BackgroundTransparency = 1
+    label.Text = text .. ": " .. defaultValue
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextSize = 13
+    label.Font = Enum.Font.GothamBold
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = container
+    
+    local sliderBg = Instance.new("Frame")
+    sliderBg.Size = UDim2.new(1, -24, 0, 7)
+    sliderBg.Position = UDim2.new(0, 12, 1, -22)
+    sliderBg.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+    sliderBg.BorderSizePixel = 0
+    sliderBg.Parent = container
+    
+    local sliderBgCorner = Instance.new("UICorner")
+    sliderBgCorner.CornerRadius = UDim.new(1, 0)
+    sliderBgCorner.Parent = sliderBg
+    
+    local sliderFill = Instance.new("Frame")
+    sliderFill.Size = UDim2.new((defaultValue - min) / (max - min), 0, 1, 0)
+    sliderFill.BackgroundColor3 = Color3.fromRGB(100, 200, 255)
+    sliderFill.BorderSizePixel = 0
+    sliderFill.Parent = sliderBg
+    
+    local sliderFillCorner = Instance.new("UICorner")
+    sliderFillCorner.CornerRadius = UDim.new(1, 0)
+    sliderFillCorner.Parent = sliderFill
+    
+    local sliderBtn = Instance.new("TextButton")
+    sliderBtn.Size = UDim2.new(0, 18, 0, 18)
+    sliderBtn.Position = UDim2.new((defaultValue - min) / (max - min), -9, 0.5, -9)
+    sliderBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    sliderBtn.Text = ""
+    sliderBtn.Parent = sliderBg
+    
+    local sliderBtnCorner = Instance.new("UICorner")
+    sliderBtnCorner.CornerRadius = UDim.new(1, 0)
+    sliderBtnCorner.Parent = sliderBtn
+    
+    local dragging = false
+    local currentValue = defaultValue
+    
+    sliderBtn.MouseButton1Down:Connect(function()
+        dragging = true
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    
+    local renderConnection = RunService.RenderStepped:Connect(function()
+        if dragging then
+            local mouse = player:GetMouse()
+            local relativeX = math.clamp(mouse.X - sliderBg.AbsolutePosition.X, 0, sliderBg.AbsoluteSize.X)
+            local percentage = relativeX / sliderBg.AbsoluteSize.X
+            currentValue = math.floor(min + (max - min) * percentage)
+            
+            sliderBtn.Position = UDim2.new(percentage, -9, 0.5, -9)
+            sliderFill.Size = UDim2.new(percentage, 0, 1, 0)
+            label.Text = text .. ": " .. currentValue
+            
+            onValueChange(currentValue)
+        end
+    end)
+    
+    -- Adicionar conexão à lista para limpeza
+    table.insert(connections, renderConnection)
+    
+    return container
+end
+
+-- Adicionar botões e funcionalidades
+createButton("🚩 Mark Position", markPosition)
+createButton("🗑️ Clear Position", clearPosition, nil, Color3.fromRGB(60, 40, 40))
+
+-- Separador
+local separator1 = Instance.new("Frame")
+separator1.Size = UDim2.new(1, -8, 0, 1)
+separator1.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+separator1.BorderSizePixel = 0
+separator1.Parent = scrollFrame
+
+createButton("⚡ Instant TP", instantTP, nil, Color3.fromRGB(50, 100, 200))
+createButton("⏳ TP Countdown", tpCountdown, nil, Color3.fromRGB(200, 150, 50))
+
+local separator2 = Instance.new("Frame")
+separator2.Size = UDim2.new(1, -8, 0, 1)
+separator2.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+separator2.BorderSizePixel = 0
+separator2.Parent = scrollFrame
+
+createToggle("🏁 Speed Boost", toggleSpeedBoost)
+createToggle("📵 Fake Ping Server", toggleFakePing)
+
+local separator3 = Instance.new("Frame")
+separator3.Size = UDim2.new(1, -8, 0, 1)
+separator3.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+separator3.BorderSizePixel = 0
+separator3.Parent = scrollFrame
+
+createButton("🚀 TP Forward", tpForward, nil, Color3.fromRGB(100, 150, 200))
+
+local separator4 = Instance.new("Frame")
+separator4.Size = UDim2.new(1, -8, 0, 1)
+separator4.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+separator4.BorderSizePixel = 0
+separator4.Parent = scrollFrame
+
+createToggle("💠 Hitbox Expander", toggleHitboxExpander)
+createSlider("Hitbox Size", 5, 250, 20, function(value)
+    hitboxSize = value
+end)
+
+-- Funcionalidade dos botões da barra de título
+local isMinimized = false
+
+minimizeBtn.MouseButton1Click:Connect(function()
+    isMinimized = true
+    TweenService:Create(mainFrame, TweenInfo.new(0.3), {
+        Size = UDim2.new(0, 320, 0, 45)
+    }):Play()
+    scrollFrame.Visible = false
+end)
+
+maximizeBtn.MouseButton1Click:Connect(function()
+    if isMinimized then
+        isMinimized = false
+        TweenService:Create(mainFrame, TweenInfo.new(0.3), {
+            Size = UDim2.new(0, 320, 0, 420)
+        }):Play()
+        scrollFrame.Visible = true
+    end
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+    -- Limpar todas as conexões
+    for _, conn in pairs(connections) do
+        conn:Disconnect()
+    end
+    
+    -- Destruir GUI
+    screenGui:Destroy()
+    
+    createNotification("👋 Branzz Hub PvP fechado!", Color3.fromRGB(220, 100, 100))
+end)
+
+-- Notificação de inicialização
+createNotification("✅ Branzz Hub PvP carregado com sucesso!", Color3.fromRGB(100, 255, 150))
+
+print("Branzz Hub PvP - Script carregado!")
